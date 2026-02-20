@@ -245,7 +245,7 @@ resource "aws_lb_listener" "listener" {
 #### launch template for EC2 instances ####
 resource "aws_launch_template" "app" {
     name = "${var.project_name}-launch-template"
-    key_name = "aws-project.pem"
+    # key_name = 
     image_id = "ami-0c83cb1c664994bbd" # Amazon Linux 2 AMI (HVM), SSD Volume Type in eu-north-1
     instance_type = "t3.micro"
     vpc_security_group_ids = [aws_security_group.ec2_sg.id]
