@@ -1,2 +1,9 @@
-aws_vpc = "10.0.0.0/16"
-project_name = "CI/CD Project"
+vpc_cidr="10.0.0.0/16"
+project_name ="ci-cd-project"
+public_subnet_a_cidr = "10.0.1.0/24"
+availability_zone_a = "eu-north-1a"
+public_subnet_b_cidr = "10.0.3.0/24"
+availability_zone_b="eu-north-1b"
+private_subnet_a_cidr = "10.0.2.0/24"
+private_subnet_b_cidr = "10.0.4.0/24"
+                                        
