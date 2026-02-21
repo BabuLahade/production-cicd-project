@@ -64,6 +64,7 @@ resource "aws_subnet" "private_b" {
 ##### Elastic IP  #####
 resource "aws_eip" "nat" {
   domain = "vpc"
+  count = 2
   tags = {
     Name = "${var.project_name}-nat-eip"
   }
@@ -71,8 +72,9 @@ resource "aws_eip" "nat" {
 
 ##### NAT Gateway #####
 resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
-  subnet_id = aws_subnet.public_a.id
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id = [aws_subnet.public_a.id, aws_subnet.public_b.id][count.index]
+  count = 2
   tags = {
     Name = "${var.project_name}-nat-gateway"
   }
@@ -245,7 +247,7 @@ resource "aws_lb_listener" "listener" {
 #### launch template for EC2 instances ####
 resource "aws_launch_template" "app" {
     name = "${var.project_name}-launch-template"
-    # key_name = 
+    key_name = var.key_pair_name 
     image_id = "ami-0c83cb1c664994bbd" # Amazon Linux 2 AMI (HVM), SSD Volume Type in eu-north-1
     instance_type = "t3.micro"
     vpc_security_group_ids = [aws_security_group.ec2_sg.id]
@@ -307,7 +309,7 @@ resource "aws_db_instance" "rds" {
     instance_class = "db.t3.micro"
     db_name = "mydb"
     username = "admin"
-    password = "password123"
+    password = var.db_password
     db_subnet_group_name = aws_db_subnet_group.rds_subnet_group.name
     vpc_security_group_ids = [aws_security_group.rds_sg.id]
 
@@ -317,3 +319,39 @@ resource "aws_db_instance" "rds" {
 
 
 }
+
+####### S3,Lambda, Event ######
+resource "aws_s3_bucket" "my_bucket" {
+    bucket = "${var.project_name}-bucket-uploads"
+   
+    tags = {
+        Name = "${var.project_name}-bucket-uploads"
+    }
+}
+
+resource "aws_lambda_function" "my_lambda" {
+    filename = "lambda_function.zip"
+    function_name = "s3-event-processor"
+    role = aws_iam_role.lambda_role.arn
+    handler = "index.handler"
+    runtime = "python3.9"
+}
+
+### permissions for Lambda to access S3 ###
+resource "aws_lambda_permission" "allow_s3" {
+    action = "lambda:InvokeFunction"
+    function_name = aws_lambda_function.my_lambda.function_name
+    principal = "s3.amazonaws.com"
+    source_arn = aws_s3_bucket.my_bucket.arn
+}
+
+#### EVENT NOTIFICATION for S3 to trigger Lambda ####
+resource "aws_s3_bucket_notification" "trigger" {
+    bucket = aws_s3_bucket.my_bucket.id
+    lambda_function {
+      lambda_function_arn = aws_lamda_function.my_worker.arn
+      events = ["s3:objectCreated:*"]  ## trigger when we upload somethings
+    }
+}
+
+######### IAM Roles ANd Policies ##########

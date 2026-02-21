@@ -39,3 +39,7 @@ variable "db_password" {
   type        = string
   sensitive   = true
 }
+variable "key_pair_name" {
+  description = "key pair name "
+  type = string
+}
