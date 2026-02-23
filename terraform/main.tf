@@ -74,6 +74,7 @@ resource "aws_eip" "nat" {
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat[count.index].id
   subnet_id = [aws_subnet.public_a.id, aws_subnet.public_b.id][count.index]
+  depends_on = [ aws_internet_gateway.igw ]
   count = 2
   tags = {
     Name = "${var.project_name}-nat-gateway"
@@ -103,24 +104,31 @@ resource "aws_route_table_association" "public_b_assoc"{
 
 resource "aws_route_table" "private_rt"{
     vpc_id = aws_vpc.main.id
+    count = 2
     route {
         cidr_block = "0.0.0.0/0"
-        nat_gateway_id = aws_nat_gateway.nat.id
+        nat_gateway_id = aws_nat_gateway.nat[count.index].id
   
 }
 
     tags = {
-        Name = "${var.project_name}-private-rt"
+        Name = "${var.project_name}-private-rt-${count.index}"
     }
 }
-resource "aws_route_table_association" "private_a_assoc" {
-    subnet_id = aws_subnet.private_a.id
-    route_table_id = aws_route_table.private_rt.id
+
+resource "aws_route_table_association" "private_assoc" {
+  count          = 2
+  subnet_id      = [aws_subnet.private_a.id, aws_subnet.private_b.id][count.index]
+  route_table_id = aws_route_table.private_rt[count.index].id
 }
-resource "aws_route_table_association" "private_b_assoc" {
-    subnet_id = aws_subnet.private_b.id
-    route_table_id = aws_route_table.private_rt.id
-}
+# resource "aws_route_table_association" "private_a_assoc" {
+#     subnet_id = aws_subnet.private_a.id
+#     route_table_id = aws_route_table.private_rt.id
+# }
+# resource "aws_route_table_association" "private_b_assoc" {
+#     subnet_id = aws_subnet.private_b.id
+#     route_table_id = aws_route_table.private_rt.id
+# }
 
 
 ######## security group ######
@@ -243,13 +251,38 @@ resource "aws_lb_listener" "listener" {
   
 }
 
+##### AMI image 
+# data "aws_ami" "amazon_linux" {
+#     most_recent = true
+#     filter {
+#         name = "name"
+#         values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+#     }
+#     filter {
+#         name = "virtualization-type"
+#         values = ["hvm"]
+#     }
+#     owners = ["137112412989"] # Amazon
+# }
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
 
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
 #### launch template for EC2 instances ####
 resource "aws_launch_template" "app" {
     name = "${var.project_name}-launch-template"
     key_name = var.key_pair_name 
-    image_id = "ami-0c83cb1c664994bbd" # Amazon Linux 2 AMI (HVM), SSD Volume Type in eu-north-1
-    instance_type = "t3.micro"
+    # image_id = "ami-0c83cb1c664994bbd" # Amazon Linux 2 AMI (HVM), SSD Volume Type in eu-north-1
+    instance_type = var.instance_type
+    image_id = data.aws_ami.amazon_linux.id
+    iam_instance_profile {
+        name = aws_iam_instance_profile.ec2_profile.name
+    }
     vpc_security_group_ids = [aws_security_group.ec2_sg.id]
     # security_group_names = [aws_security_group.ec2_sg.id]
     user_data = base64encode(<<-EOF
@@ -328,6 +361,12 @@ resource "aws_s3_bucket" "my_bucket" {
         Name = "${var.project_name}-bucket-uploads"
     }
 }
+resource "aws_s3_bucket_versioning" "versioning" {
+  bucket = aws_s3_bucket.my_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
 
 resource "aws_lambda_function" "my_lambda" {
     filename = "lambda_function.zip"
@@ -349,9 +388,236 @@ resource "aws_lambda_permission" "allow_s3" {
 resource "aws_s3_bucket_notification" "trigger" {
     bucket = aws_s3_bucket.my_bucket.id
     lambda_function {
-      lambda_function_arn = aws_lamda_function.my_worker.arn
+      lambda_function_arn = aws_lambda_function.my_lambda.arn
       events = ["s3:objectCreated:*"]  ## trigger when we upload somethings
     }
 }
 
 ######### IAM Roles ANd Policies ##########
+resource "aws_iam_role" "ec2_role" {
+    name = "${var.project_name}-ec2-role"
+    assume_role_policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+            {
+                Action = "sts:AssumeRole"
+                Effect = "Allow"
+                Principal = {
+                    Service = "ec2.amazonaws.com"
+                }
+            }
+        ]
+    })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_attach" {
+    role = aws_iam_role.ec2_role.name
+    policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+# resource "aws_iam_role_policy_attachment" "s3_read_only" {
+#     role = aws_iam_role.ec2_role.name
+#     policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+# }
+
+resource "aws_iam_policy" "ec2_s3_policy" {
+  name = "${var.project_name}-ec2-s3-policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.my_bucket.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${aws_s3_bucket.my_bucket.arn}/*"
+      }
+    ]
+  })
+}
+resource "aws_iam_role_policy_attachment" "ec2_s3_attach" {
+    role = aws_iam_role.ec2_role.name
+    policy_arn = aws_iam_policy.ec2_s3_policy.arn
+}
+resource "aws_iam_role_policy_attachment" "CloudWatch_logs" {
+    role = aws_iam_role.ec2_role.name
+    policy_arn = "arn:aws:iam::aws:policy/cloudWatchAgentsServerPolicy"
+}
+
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "${var.project_name}-ec2-profile"
+  role = aws_iam_role.ec2_role.name
+}
+####### CloudWatch Logs,Metrics,Alarms ######
+resource "aws_cloudwatch_log_group" "app_logs" {
+    name = "/aws/ec2/${var.project_name}-app-logs"
+    retention_in_days = 7
+}
+## create sns for alarm notifications
+resource "aws_sns_topic" "alarm_topic" {
+    name = "${var.project_name}-alarm-topic"
+
+}
+#### subscription for sns topic ####
+resource "aws_sns_topic_subscription" "alarm_subscription" {
+  topic_arn = aws_sns_topic.alarm_topic.arn
+  protocol = "email"
+  endpoint = var.alarm_email
+}
+
+
+#### create an alarm for high CPU utilization on EC2 instances ####
+resource "aws_cloudwatch_metric_alarm" "high_cpu" {
+    alarm_name = "${var.project_name}-high-cpu-alarm"
+    comparison_operator = "GreaterThanOrEqualToThreshold"
+    evaluation_periods = 2
+    metric_name = "CPUUtilization"
+    namespace = "AWS/EC2"
+    period = "180"
+    statistic = "Average"
+    threshold = "80"
+    alarm_description = "this metric monitors ec2 cpu utilization"
+
+    # trigger the sns topic 
+    alarm_actions = [aws_sns_topic.alarm_topic.arn]
+
+    # dimensions = {
+    #     aws_autoscaling_groupName = aws_autoscaling_group.ec2_asg.name
+    # }
+    dimensions = {
+        AutoScalingGroupName = aws_autoscaling_group.ec2_asg.name
+        
+}
+}
+
+# resource "aws_cloudwatch_dashboard" "main" {
+#   dashboard_name = "${var.project_name}-Monitoring"
+
+#   dashboard_body = jsonencode({
+#     widgets = [
+#       {
+#         type   = "metric"
+#         x      = 0
+#         y      = 0
+#         width  = 12
+#         height = 6
+#         properties = {
+#           metrics = [
+#             ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${aws_autoscaling_group.ec2_asg.name}"]
+#           ]
+#           period = 300
+#           stat   = "Average"
+#           region = "eu-north-1"
+#           title  = "Average CPU Usage"
+#         }
+#       },
+#       {
+#         type   = "metric"
+#         x      = 12
+#         y      = 0
+#         width  = 12
+#         height = 6
+#         properties = {
+#           metrics = [
+#             ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${aws_lb.alb.arn_suffix}"]
+#           ]
+#           period = 300
+#           stat   = "Sum"
+#           region = "eu-north-1"
+#           title  = "Total ALB Requests"
+#         }
+#       }
+#     ]
+#   })
+# }
+
+
+########### WAF 
+resource "aws_wafv2_web_acl" "alb_waf" {
+  name  = "${var.project_name}-waf"
+  scope = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.project_name}-waf"
+    sampled_requests_enabled   = true
+  }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 1
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "CommonRuleSet"
+      sampled_requests_enabled   = true
+    }
+  }
+}
+resource "aws_wafv2_web_acl_association" "alb_assoc" {
+  resource_arn = aws_lb.alb.arn
+  web_acl_arn  = aws_wafv2_web_acl.alb_waf.arn
+}
+##########VPC FLow logs
+# resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+#   name              = "/aws/vpc/${var.project_name}-flow-logs"
+#   retention_in_days = 7
+# }
+# resource "aws_iam_role" "vpc_flow_logs_role" {
+#   name = "${var.project_name}-vpc-flow-logs-role"
+
+#   assume_role_policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [{
+#       Effect = "Allow"
+#       Principal = {
+#         Service = "vpc-flow-logs.amazonaws.com"
+#       }
+#       Action = "sts:AssumeRole"
+#     }]
+#   })
+# }
+# resource "aws_iam_role_policy" "vpc_flow_logs_policy" {
+#   name = "${var.project_name}-vpc-flow-logs-policy"
+#   role = aws_iam_role.vpc_flow_logs_role.id
+
+#   policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [{
+#       Effect = "Allow"
+#       Action = [
+#         "logs:CreateLogStream",
+#         "logs:PutLogEvents",
+#         "logs:DescribeLogGroups",
+#         "logs:DescribeLogStreams"
+#       ]
+#       Resource = "*"
+#     }]
+#   })
+# }
+# resource "aws_flow_log" "vpc_flow_logs" {
+#   vpc_id               = aws_vpc.main.id
+#   traffic_type         = "ALL"
+#   log_destination_type = "cloud-watch-logs"
+#   log_group_name       = aws_cloudwatch_log_group.vpc_flow_logs.name
+#   iam_role_arn         = aws_iam_role.vpc_flow_logs_role.arn
+# }

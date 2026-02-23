@@ -43,3 +43,13 @@ variable "key_pair_name" {
   description = "key pair name "
   type = string
 }
+
+variable "alarm_email" {
+  description = "email address for alarm notifications"
+  type = string
+}
+
+variable "instance_type" {
+  description = "instance type for our EC2 instance"
+  type = string
+}

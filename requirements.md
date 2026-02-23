@@ -31,4 +31,9 @@ ec2 auto scaling group
 later add 
 s3 bucket dynamodb
 aws lambda
+IAM roles and policies
+cloudwatch logs, metrics,alarms
 
+##### Phase 2 started   
+DEVSECOPS
+OPA(open policy agent)
