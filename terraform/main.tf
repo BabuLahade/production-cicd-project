@@ -371,7 +371,7 @@ resource "aws_s3_bucket_versioning" "versioning" {
 resource "aws_lambda_function" "my_lambda" {
     filename = "lambda_function.zip"
     function_name = "s3-event-processor"
-    role = aws_iam_role.lambda_role.arn
+    role = aws_iam_role.lambda_exec_role.arn
     handler = "index.handler"
     runtime = "python3.9"
 }
@@ -621,3 +621,26 @@ resource "aws_wafv2_web_acl_association" "alb_assoc" {
 #   log_group_name       = aws_cloudwatch_log_group.vpc_flow_logs.name
 #   iam_role_arn         = aws_iam_role.vpc_flow_logs_role.arn
 # }
+# 1. Create the IAM Role for Lambda
+resource "aws_iam_role" "lambda_exec_role" {
+  name = "${var.project_name}-lambda-exec-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# 2. Attach basic execution permissions (logging)
+resource "aws_iam_role_policy_attachment" "lambda_logs" {
+  role       = aws_iam_role.lambda_exec_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
